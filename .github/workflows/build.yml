@@ -1,35 +1,56 @@
-name: CI/CD (Docker Build and Push to Hub)
+name: CI/CD Pipeline to AWS EC2
 
-# main 브랜치에 코드가 푸시되면 자동으로 작동합니다
 on:
   push:
     branches: [ "main" ]
 
 jobs:
+  # [1단계: CI] 로봇 컴퓨터에서 빌드하고 도커허브로 업로드
   build-and-push:
     runs-on: ubuntu-latest
-
     steps:
-    # 1. 깃허브 저장소에 올라온 소스 코드를 로봇 컴퓨터로 다운로드
     - name: Checkout source code
       uses: actions/checkout@v4
 
-    # 2. 깃허브 금고(Secrets)에 넣어둔 정보를 꺼내서 Docker Hub에 로그인
     - name: Log in to Docker Hub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-    # 3. Docker 빌드를 위한 최적화 환경 세팅
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    # 4. 이미지를 구워서 내 도커 허브 무료 창고로 자동 업로드(Push)
     - name: Build and Push Docker Image
       uses: docker/build-push-action@v5
       with:
         context: .
         push: true
-        # 내 도커 허브 저장소에 'my-web-page'라는 방을 만들고 v1 이라는 라벨을 붙여 저장합니다
-        tags: decopark/my-web-page:v1
+        tags: decopark/my-web-page:latest # 태그를 latest로 통일합니다
+
+  # [2단계: CD] AWS EC2 서버에 원격 접속해서 새로 다운받아 배포
+  deploy-to-ec2:
+    needs: build-and-push # 빌드가 무조건 성공해야만 배포 단계로 넘어갑니다
+    runs-on: ubuntu-latest
+    steps:
+    # 깃허브 금고에 숨겨둔 EC2 접속용 비밀 데이터(REMOTE_HOST, REMOTE_USER, SSH_PRIVATE_KEY)를 사용해 원격 접속합니다.
+    - name: Executing remote ssh commands using ssh key
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.REMOTE_HOST }}
+        username: ${{ secrets.REMOTE_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 22
+        # AWS EC2 서버 내부로 침투해서 실행할 리눅스 명령어 목록입니다
+        script: |
+          echo "🚚 1. AWS EC2 내부에 접속 완료. 최신 도커 이미지 다운로드 중..."
+          docker pull decopark/my-web-page:latest
+          
+          echo "🛑 2. 기존에 돌아가고 있던 구버전 웹 서버 컨테이너 중지 및 삭제..."
+          docker stop my-web-container || true
+          docker rm my-web-container || true
+          
+          echo "🚀 3. 다운로드한 따끈따끈한 새 버전 이미지로 웹 서버 컨테이너 기동!"
+          docker run -d --name my-web-container -p 80:8080 decopark/my-web-page:latest
+          
+          echo "✨ 4. AWS EC2 가상서버에 자동 배포(CD)가 완전히 끝났습니다!"
